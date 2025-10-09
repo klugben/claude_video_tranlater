@@ -205,7 +205,7 @@ class WhisperProcessor:
     """Whisper处理器"""
     
     def __init__(self, display: SimpleDisplay):
-        self.model = "turbo"
+        self.model = "small"
         self.temperature = 0
         self.initial_prompt = "Generate full sentence punctuation based on the language. 补全标点符号"
         self.display = display
@@ -388,31 +388,100 @@ class WhisperProcessor:
     def json_to_srt(self, json_path: str) -> str:
         """将Whisper JSON输出转换为整句级SRT"""
         self.display.progress("转换为整句级SRT格式...")
-
+        
         with open(json_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-
-        # 直接使用 segments 中的文本（包含标点符号）
-        sentence_segments = []
+        
+        # 提取所有词级时间戳
+        all_words = []
         for segment in data['segments']:
-            text = segment['text'].strip()
-            if text:
-                sentence_segments.append({
-                    'start': segment['start'],
-                    'end': segment['end'],
-                    'text': text
-                })
-
-        if not sentence_segments:
-            raise ValueError("未找到有效的段落")
-
+            if 'words' in segment:
+                for word_info in segment['words']:
+                    all_words.append({
+                        'word': word_info['word'].strip(),
+                        'start': word_info['start'],
+                        'end': word_info['end']
+                    })
+        
+        if not all_words:
+            raise ValueError("未找到词级时间戳")
+        
+        # 合并文本并按句子分割
+        full_text = ' '.join([word['word'] for word in all_words])
+        sentences = re.split(r'([.!?。！？])', full_text)
+        
+        # 合并句子和标点
+        merged_sentences = []
+        i = 0
+        while i < len(sentences):
+            sentence = sentences[i].strip()
+            if i + 1 < len(sentences) and sentences[i + 1] in '.!?。！？':
+                sentence += sentences[i + 1]
+                i += 2
+            else:
+                i += 1
+            if sentence:
+                merged_sentences.append(sentence.strip())
+        
+        # 映射句子到词级时间戳
+        sentence_segments = []
+        word_index = 0
+        
+        for sentence_idx, sentence in enumerate(merged_sentences):
+            sentence_words = sentence.replace('.', '').replace('!', '').replace('?', '').replace('。', '').replace('！', '').replace('？', '').split()
+            
+            sentence_start_time = None
+            sentence_end_time = None
+            matched_word_count = 0
+            
+            search_start = word_index
+            for i in range(search_start, len(all_words)):
+                word_text = all_words[i]['word'].replace('.', '').replace('!', '').replace('?', '').replace('。', '').replace('！', '').replace('？', '').replace(',', '').replace('，', '').strip()
+                
+                if matched_word_count < len(sentence_words):
+                    target_word = sentence_words[matched_word_count].replace(',', '').replace('，', '').strip()
+                    
+                    if word_text.lower() == target_word.lower():
+                        if sentence_start_time is None:
+                            sentence_start_time = all_words[i]['start']
+                        sentence_end_time = all_words[i]['end']
+                        matched_word_count += 1
+                        word_index = i + 1
+                        
+                        if matched_word_count >= len(sentence_words):
+                            break
+            
+            # 备用方案
+            if sentence_start_time is None or sentence_end_time is None:
+                if sentence_idx == 0:
+                    sentence_start_time = all_words[0]['start'] if all_words else 0
+                else:
+                    sentence_start_time = sentence_segments[-1]['end'] if sentence_segments else 0
+                
+                if sentence_end_time is None:
+                    avg_duration = 0.5
+                    estimated_duration = len(sentence_words) * avg_duration
+                    sentence_end_time = sentence_start_time + estimated_duration
+            
+            sentence_segments.append({
+                'start': sentence_start_time,
+                'end': sentence_end_time,
+                'text': sentence
+            })
+        
         # 生成SRT内容
         srt_content = ""
         for i, segment in enumerate(sentence_segments, 1):
             start_time = self._seconds_to_srt_time(segment['start'])
             end_time = self._seconds_to_srt_time(segment['end'])
             srt_content += f"{i}\n{start_time} --> {end_time}\n{segment['text']}\n\n"
-
+        
+        # 统计匹配准确率
+        total_matched = sum([len(seg['text'].split()) for seg in sentence_segments])
+        if len(all_words) > 0:
+            accuracy = 100 * total_matched / len(all_words)
+            self.display.success(f"词匹配准确率: {accuracy:.1f}%")
+        
         self.display.success(f"生成了 {len(sentence_segments)} 个字幕段落")
         return srt_content
     

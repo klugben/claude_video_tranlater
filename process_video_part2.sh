@@ -412,7 +412,7 @@ for i, sub in enumerate(subs):
             
             # 使用绝对路径调用IndexTTS
             tts_commands = [
-                f'cd /Users/bruce/git/claude_video_translater/indextts && PYTHONPATH=/Users/bruce/git/claude_video_translater:$PYTHONPATH MPS_FALLBACK=0 python3 cli.py \"{text}\" --voice \"/Users/bruce/git/claude_video_translater/$VOICE_FILE\" --output \"{audio_file}\" --device mps --model_dir /Users/bruce/git/claude_video_translater/checkpoints --config /Users/bruce/git/claude_video_translater/checkpoints/config.yaml'
+                f'cd indextts && PYTHONPATH=$(pwd)/..:$PYTHONPATH MPS_FALLBACK=0 python3 cli.py \"{text}\" --voice \"../$VOICE_FILE\" --output \"{audio_file}\" --device mps --model_dir ../checkpoints --config ../checkpoints/config.yaml'
             ]
             print(f'   使用IndexTTS命令: {tts_commands[0]}')
             

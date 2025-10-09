@@ -63,7 +63,7 @@ show_help() {
     echo "  3. 自动执行视频预处理（音频提取、语音识别、字幕优化）"
     echo "  4. 使用Claude AI自动翻译字幕为指定语言"
     echo "  5. 生成小红书营销文案"
-    echo "  6. 使用IndexTTS生成配音视频（含字幕）"
+    echo "  6. 生成TTS任务JSON文件到ttstasks目录"
 }
 
 # 初始化变量
@@ -246,7 +246,7 @@ fi
 echo "  2. 音频提取和语音识别"
 echo "  3. AI翻译字幕到${OUTPUT_LANGUAGE}"
 echo "  4. 生成小红书文案"
-echo "  5. 生成TTS配音视频"
+echo "  5. 生成TTS任务JSON文件"
 echo "=================================================="
 
 # 步骤1: 下载视频或使用本地文件
@@ -518,35 +518,38 @@ else
     fi
 fi
 
-# 步骤5: 生成TTS配音视频
+# 步骤5: 下载HD视频并生成TTS任务JSON文件
 echo ""
-echo "🎬 步骤 5/5: 生成配音视频..."
+echo "📋 步骤 5/5: 下载HD视频并生成TTS任务JSON文件..."
 
-# 检查下载的视频文件是否为高清版本
-VIDEO_FOR_PART2="$DOWNLOADED_FILE"
-if [[ ! "$DOWNLOADED_FILE" =~ _hd\..*$ ]]; then
+# 初始化要使用的视频文件（默认为下载的文件）
+VIDEO_FOR_TTS="$DOWNLOADED_FILE"
+
+# 如果是网络视频，尝试下载HD版本
+if [ "$IS_LOCAL_FILE" = false ]; then
     echo ""
-    echo "🔍 检测到当前视频不是高清版本，正在下载高清视频用于最终处理..."
-    echo "当前视频: $DOWNLOADED_FILE"
-    
-    # 生成HD视频文件名（基于原文件名添加_hd）
+    echo "🔍 检查HD视频..."
+
+    # 生成HD视频文件名
     BASENAME=$(basename "${DOWNLOADED_FILE%.*}")
     EXTENSION="${DOWNLOADED_FILE##*.}"
     HD_VIDEO_FILE="${BASENAME}_hd.${EXTENSION}"
-    
+
     echo "目标HD视频文件: $HD_VIDEO_FILE"
-    
+
     # 检查HD视频是否已经存在
     if [ -f "$HD_VIDEO_FILE" ] && [ -s "$HD_VIDEO_FILE" ]; then
         echo "✅ HD视频文件已存在: $HD_VIDEO_FILE"
-        VIDEO_FOR_PART2="$HD_VIDEO_FILE"
+        VIDEO_FOR_TTS="$HD_VIDEO_FILE"
     else
+        echo "📥 正在下载HD视频..."
+
         # 创建临时文件保存高清下载输出
         HD_DOWNLOAD_LOG=$(mktemp)
-        
+
         # 临时禁用严格模式以捕获下载脚本的退出码
         set +e
-        
+
         # 构建高清下载参数
         HD_GETVIDEO_ARGS=("-hd")
         if [ -n "$OUTPUT_NAME" ]; then
@@ -558,42 +561,45 @@ if [[ ! "$DOWNLOADED_FILE" =~ _hd\..*$ ]]; then
             HD_GETVIDEO_ARGS+=("--proxy")
         fi
         HD_GETVIDEO_ARGS+=("$VIDEO_URL")
-        
+
         # 下载高清视频
         echo "执行命令: $GETVIDEO_SCRIPT ${HD_GETVIDEO_ARGS[*]}"
         echo ""
         "$GETVIDEO_SCRIPT" "${HD_GETVIDEO_ARGS[@]}" 2>&1 | tee "$HD_DOWNLOAD_LOG"
         HD_DOWNLOAD_EXIT_CODE=$?
-        
+
         set -e
-        
+
+        echo ""
+        echo "=================================================="
+
         if [ $HD_DOWNLOAD_EXIT_CODE -eq 0 ]; then
             # 从输出中提取高清视频文件名
             HD_DOWNLOADED_FILE=$(grep "^DOWNLOADED_FILE:" "$HD_DOWNLOAD_LOG" | tail -n 1 | sed 's/^DOWNLOADED_FILE://')
-            
+
             if [ -z "$HD_DOWNLOADED_FILE" ]; then
                 HD_DOWNLOADED_FILE=$(tail -n 1 "$HD_DOWNLOAD_LOG" 2>/dev/null || echo "")
             fi
-            
+
             # 检查HD下载结果并处理视频格式转换
             HD_AUDIO_FILE=""
-            
+
             # 检查是否有分离的视频和音频文件
             if [ -f "$HD_DOWNLOADED_FILE" ] && [ -s "$HD_DOWNLOADED_FILE" ]; then
                 # 获取文件基础名（去掉扩展名）
                 HD_BASE_NAME=$(basename "$HD_DOWNLOADED_FILE" | sed 's/\.[^.]*$//')
-                
+
                 # 检查是否是分离下载的视频文件
                 if [[ "$HD_DOWNLOADED_FILE" == *"_hd_video."* ]]; then
                     # 分离下载模式：查找对应的音频文件
                     echo "🔍 检测到分离下载的HD视频文件: $HD_DOWNLOADED_FILE"
-                    
+
                     # 查找对应的音频文件
                     AUDIO_PATTERNS=(
                         "${HD_BASE_NAME/_video/_audio}.webm"
                         "${HD_BASE_NAME/_video/_audio}.m4a"
                     )
-                    
+
                     for pattern in "${AUDIO_PATTERNS[@]}"; do
                         if [ -f "$pattern" ] && [ -s "$pattern" ]; then
                             HD_AUDIO_FILE="$pattern"
@@ -601,7 +607,7 @@ if [[ ! "$DOWNLOADED_FILE" =~ _hd\..*$ ]]; then
                             break
                         fi
                     done
-                    
+
                     # 如果直接匹配失败，尝试通配符搜索
                     if [ -z "$HD_AUDIO_FILE" ]; then
                         echo "🔍 使用通配符搜索音频文件..."
@@ -613,130 +619,176 @@ if [[ ! "$DOWNLOADED_FILE" =~ _hd\..*$ ]]; then
                             fi
                         done
                     fi
-                    
+
                     if [ -n "$HD_AUDIO_FILE" ]; then
                         # 使用ffmpeg合并视频和音频
                         echo "🔄 使用ffmpeg合并HD视频和音频..."
                         echo "   视频: $HD_DOWNLOADED_FILE"
                         echo "   音频: $HD_AUDIO_FILE"
                         echo "   输出: $HD_VIDEO_FILE"
-                        
+
                         # 检查ffmpeg是否可用
                         if ! command -v ffmpeg &> /dev/null; then
                             echo "❌ ffmpeg未安装，无法合并视频和音频"
                             echo "   请安装ffmpeg: brew install ffmpeg"
-                            echo "   使用原视频继续处理: $DOWNLOADED_FILE"
+                            echo "   使用原视频: $DOWNLOADED_FILE"
                         elif ffmpeg -i "$HD_DOWNLOADED_FILE" -i "$HD_AUDIO_FILE" \
                                  -c:v copy -c:a aac -shortest \
                                  "$HD_VIDEO_FILE" -y \
                                  -hide_banner -loglevel warning; then
                             echo "✅ HD视频合并成功: $HD_VIDEO_FILE"
-                            
+
                             # 获取文件信息
                             HD_SIZE=$(du -h "$HD_VIDEO_FILE" | cut -f1)
                             echo "   合并后文件大小: $HD_SIZE"
-                            
+
                             # 清理分离的临时文件
                             echo "🧹 清理分离的临时文件..."
                             rm -f "$HD_DOWNLOADED_FILE" "$HD_AUDIO_FILE"
-                            
-                            VIDEO_FOR_PART2="$HD_VIDEO_FILE"
+
+                            VIDEO_FOR_TTS="$HD_VIDEO_FILE"
                         else
-                            echo "❌ HD视频合并失败，使用原视频继续处理"
+                            echo "❌ HD视频合并失败，使用原视频"
                             rm -f "$HD_VIDEO_FILE"  # 清理可能的不完整文件
                         fi
                     else
                         echo "⚠️  未找到对应的音频文件，无法合并HD视频"
-                        echo "   使用原视频继续处理: $DOWNLOADED_FILE"
+                        echo "   使用原视频: $DOWNLOADED_FILE"
                     fi
-                    
-                elif [[ "$HD_DOWNLOADED_FILE" == *.mp4 ]] || [[ "$HD_DOWNLOADED_FILE" == *.mkv ]]; then
+
+                elif [[ "$HD_DOWNLOADED_FILE" == *.mp4 ]] || [[ "$HD_DOWNLOADED_FILE" == *.mkv ]] || [[ "$HD_DOWNLOADED_FILE" == *.webm ]]; then
                     # 合并下载模式：直接转换格式（如果需要）
                     echo "✅ 高清视频下载成功: $HD_DOWNLOADED_FILE"
-                    
+
                     if [[ "$HD_DOWNLOADED_FILE" == *.mp4 ]]; then
                         # 已经是mp4格式，直接重命名
                         if [ "$HD_DOWNLOADED_FILE" != "$HD_VIDEO_FILE" ]; then
                             echo "🔄 重命名HD视频文件: $HD_DOWNLOADED_FILE -> $HD_VIDEO_FILE"
                             mv "$HD_DOWNLOADED_FILE" "$HD_VIDEO_FILE"
                         fi
-                        VIDEO_FOR_PART2="$HD_VIDEO_FILE"
+                        VIDEO_FOR_TTS="$HD_VIDEO_FILE"
                     else
                         # 转换为mp4格式
                         echo "🔄 转换HD视频格式为mp4: $HD_DOWNLOADED_FILE -> $HD_VIDEO_FILE"
-                        
+
                         # 检查ffmpeg是否可用
                         if ! command -v ffmpeg &> /dev/null; then
                             echo "❌ ffmpeg未安装，无法转换视频格式"
                             echo "   请安装ffmpeg: brew install ffmpeg"
-                            echo "   使用原视频继续处理: $DOWNLOADED_FILE"
+                            echo "   使用原视频: $DOWNLOADED_FILE"
                         elif ffmpeg -i "$HD_DOWNLOADED_FILE" \
                                  -c:v libx264 -c:a aac -preset fast \
                                  "$HD_VIDEO_FILE" -y \
                                  -hide_banner -loglevel warning; then
                             echo "✅ HD视频格式转换成功: $HD_VIDEO_FILE"
-                            
+
                             # 获取文件信息
                             HD_SIZE=$(du -h "$HD_VIDEO_FILE" | cut -f1)
                             echo "   转换后文件大小: $HD_SIZE"
-                            
+
                             # 清理原始文件
                             rm -f "$HD_DOWNLOADED_FILE"
-                            
-                            VIDEO_FOR_PART2="$HD_VIDEO_FILE"
+
+                            VIDEO_FOR_TTS="$HD_VIDEO_FILE"
                         else
-                            echo "❌ HD视频格式转换失败，使用原视频继续处理"
+                            echo "❌ HD视频格式转换失败，使用原视频"
                             rm -f "$HD_VIDEO_FILE"  # 清理可能的不完整文件
                         fi
                     fi
                 else
                     echo "⚠️  未知的HD视频文件格式: $HD_DOWNLOADED_FILE"
-                    echo "   使用原视频继续处理: $DOWNLOADED_FILE"
+                    echo "   使用原视频: $DOWNLOADED_FILE"
                 fi
             else
-                echo "⚠️  高清视频下载失败，使用原视频继续处理: $DOWNLOADED_FILE"
+                echo "⚠️  高清视频下载失败，使用原视频: $DOWNLOADED_FILE"
             fi
         else
-            echo "⚠️  高清视频下载失败，使用原视频继续处理: $DOWNLOADED_FILE"
+            echo "⚠️  高清视频下载失败（退出码: $HD_DOWNLOAD_EXIT_CODE），使用原视频: $DOWNLOADED_FILE"
         fi
-        
+
         # 清理临时文件
         rm -f "$HD_DOWNLOAD_LOG"
     fi
 else
-    echo "✅ 当前视频已是高清版本: $DOWNLOADED_FILE"
+    echo "ℹ️  本地文件模式，跳过HD视频下载"
 fi
 
 echo ""
-echo "🎬 使用视频文件进行TTS处理: $VIDEO_FOR_PART2"
+echo "📋 生成TTS任务JSON文件..."
 
-# 构建process_video_part2.sh的参数
-PART2_ARGS=()
-if [ "$OUTPUT_LANGUAGE" != "zh" ]; then
-    PART2_ARGS+=("--olang" "$OUTPUT_LANGUAGE")
+# 创建 ttstasks 目录
+TTSTASKS_DIR="$(pwd)/ttstasks"
+if [ ! -d "$TTSTASKS_DIR" ]; then
+    echo "📁 创建目录: $TTSTASKS_DIR"
+    mkdir -p "$TTSTASKS_DIR"
 fi
-if [ -n "$VOICE_FILE" ]; then
-    PART2_ARGS+=("-v" "$VOICE_FILE")
-fi
-if [ -n "$SPEECH_RATE" ]; then
-    PART2_ARGS+=("-s" "$SPEECH_RATE")
-fi
-if [ -n "$SUBTITLE_SIZE" ]; then
-    PART2_ARGS+=("--fsize" "$SUBTITLE_SIZE")
-fi
-PART2_ARGS+=("$VIDEO_FOR_PART2")
 
-# 显示将要执行的命令
-echo "执行命令: $PROCESS_PART2_SCRIPT ${PART2_ARGS[*]}"
+# 确定输出文件名
+if [ -n "$OUTPUT_NAME" ]; then
+    JSON_FILENAME="${OUTPUT_NAME}.json"
+else
+    # 使用视频文件的基础名
+    JSON_FILENAME="$(basename "${DOWNLOADED_FILE%.*}").json"
+fi
+
+JSON_FILE="$TTSTASKS_DIR/$JSON_FILENAME"
+
+# 获取视频文件的完整路径
+VIDEO_FULL_PATH="$(cd "$(dirname "$VIDEO_FOR_TTS")" && pwd)/$(basename "$VIDEO_FOR_TTS")"
+
+# 获取中文字幕文件的完整路径
+CN_SRT_FULL_PATH="$(cd "$(dirname "$TRANSLATED_SRT")" && pwd)/$(basename "$TRANSLATED_SRT")"
+
+# 生成输出文件的完整路径
+if [ -n "$OUTPUT_NAME" ]; then
+    OUTPUT_FILENAME="${OUTPUT_NAME}_cn.mp4"
+else
+    OUTPUT_FILENAME="$(basename "${DOWNLOADED_FILE%.*}")_cn.mp4"
+fi
+OUTPUT_FULL_PATH="$(pwd)/$OUTPUT_FILENAME"
+
+# 生成JSON文件
+echo "{" > "$JSON_FILE"
+echo "  \"video_full_filename\": \"$VIDEO_FULL_PATH\"," >> "$JSON_FILE"
+echo "  \"cn_srt_full_filename\": \"$CN_SRT_FULL_PATH\"," >> "$JSON_FILE"
+echo "  \"output_full_filename\": \"$OUTPUT_FULL_PATH\"" >> "$JSON_FILE"
+echo "}" >> "$JSON_FILE"
+
+echo "✅ JSON文件生成完成: $JSON_FILE"
+echo ""
+echo "📄 文件内容:"
+cat "$JSON_FILE"
 echo ""
 
-# 执行TTS视频生成，数组自动处理引用
-if ! "$PROCESS_PART2_SCRIPT" "${PART2_ARGS[@]}"; then
-    echo "❌ 配音视频生成失败"
-    exit 1
+echo "=================================================="
+echo "🎉 处理完成！"
+echo ""
+echo "📁 生成的文件:"
+echo "  原始视频: $DOWNLOADED_FILE"
+echo "  工作目录: $TEMP_DIR"
+echo "  原始字幕: $OPTIMIZED_SRT"
+if [ -f "$TRANSLATED_SRT" ]; then
+    echo "  翻译字幕: $TRANSLATED_SRT"
 fi
+if [ -f "$XIAOHONGSHU_MD" ]; then
+    echo "  小红书文案: $XIAOHONGSHU_MD"
+fi
+echo "  TTS任务文件: $JSON_FILE"
+echo ""
+echo "📋 处理摘要:"
+echo "  ✅ 1. 视频下载成功"
+echo "  ✅ 2. 音频提取和语音识别完成"
+echo "  ✅ 3. AI翻译字幕完成"
+if [ -f "$XIAOHONGSHU_MD" ]; then
+    echo "  ✅ 4. 小红书文案生成完成"
+else
+    echo "  ⚠️ 4. 小红书文案生成失败（已跳过）"
+fi
+echo "  ✅ 5. TTS任务JSON文件生成完成"
+echo "=================================================="
 
-echo "✅ 配音视频生成完成"
+# 退出，不执行后续步骤
+exit 0
 
 # 获取生成的文件信息
 BASENAME=$(basename "${VIDEO_FOR_PART2%.*}")
